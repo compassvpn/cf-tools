@@ -31,7 +31,7 @@ const (
 	url         = "https://bgp.tools/table.jsonl" // URL for the JSONL table dump
 	userAgent   = "bgp.tools script"              // Custom User-Agent header
 
-	ConcurrentPrefixes = 256 // Number of Concurrencies
+	ConcurrentPrefixes = 128 // Number of Concurrencies
 	RetryCount         = 3   // Number of retries if one checker is failed
 
 	RetryDelay     = 150 * time.Millisecond // Delay between each retry
