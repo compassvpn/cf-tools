@@ -29,7 +29,7 @@ import (
 const (
 	asnToFilter = 13335                           // The CloudFlare ASN
 	url         = "https://bgp.tools/table.jsonl" // URL for the JSONL table dump
-	userAgent   = "bgp.tools script"              // Custom User-Agent header
+	userAgent   = "compassvpn bgp.tools"              // Custom User-Agent header
 
 	ConcurrentPrefixes = 128 // Number of Concurrencies
 	RetryCount         = 3   // Number of retries if one checker is failed
