@@ -83,18 +83,10 @@ jobs:
         run: ./cf-tools -f
 
       - name: Commit output from ./cf-tools -f
-        if: ${{ success() }}
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          TIMESTAMP=$(date -u +"%H:%M %d-%m-%Y")
-          git add all_cf_v4_24.txt
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update all_cf_v4_24.txt - $TIMESTAMP"
-            git push
-          fi
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "Update all_cf_v4_24.txt - $TIMESTAMP"
+          file_pattern: all_cf_v4_24.txt
 
       - name: Wait for 5 seconds
         run: sleep 5
@@ -104,18 +96,10 @@ jobs:
         run: ./cf-tools -c
 
       - name: Commit output from ./cf-tools -c
-        if: ${{ success() }}
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          TIMESTAMP=$(date -u +"%H:%M %d-%m-%Y")
-          git add all_cdn_ipv4.txt
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update all_cdn_ipv4.txt - $TIMESTAMP"
-            git push
-          fi
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "Update all_cdn_ipv4.txt - $TIMESTAMP"
+          file_pattern: all_cdn_ipv4.txt
 
       - name: Wait for 5 seconds
         run: sleep 5
@@ -125,15 +109,7 @@ jobs:
         run: ./cf-tools -w
 
       - name: Commit output from ./cf-tools -w
-        if: ${{ success() }}
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          TIMESTAMP=$(date -u +"%H:%M %d-%m-%Y")
-          git add all_warp_ipv4.txt
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update all_warp_ipv4.txt - $TIMESTAMP"
-            git push
-          fi
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "Update all_warp_ipv4.txt - $TIMESTAMP"
+          file_pattern: all_warp_ipv4.txt
