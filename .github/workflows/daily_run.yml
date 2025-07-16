@@ -27,6 +27,9 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Set timestamp
+        run: echo "TIMESTAMP=$(date -u +"%H:%M %d-%m-%Y")" >> $GITHUB_ENV
+
       - name: Cache Go modules
         uses: actions/cache@v3
         with:
@@ -49,12 +52,11 @@ jobs:
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          TIMESTAMP=$(date -u +"%H:%M %d-%m-%Y")
           git add go.mod go.sum
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update dependencies - $TIMESTAMP"
+            git commit -m "Update dependencies - ${{ env.TIMESTAMP }}"
             git push
           fi
 
@@ -85,7 +87,7 @@ jobs:
       - name: Commit output from ./cf-tools -f
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update all_cf_v4_24.txt - $TIMESTAMP"
+          commit_message: "Update all_cf_v4_24.txt - ${{ env.TIMESTAMP }}"
           file_pattern: all_cf_v4_24.txt
 
       - name: Wait for 5 seconds
@@ -98,7 +100,7 @@ jobs:
       - name: Commit output from ./cf-tools -c
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update all_cdn_ipv4.txt - $TIMESTAMP"
+          commit_message: "Update all_cdn_ipv4.txt - ${{ env.TIMESTAMP }}"
           file_pattern: all_cdn_ipv4.txt
 
       - name: Wait for 5 seconds
@@ -111,5 +113,5 @@ jobs:
       - name: Commit output from ./cf-tools -w
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update all_warp_ipv4.txt - $TIMESTAMP"
+          commit_message: "Update all_warp_ipv4.txt - ${{ env.TIMESTAMP }}"
           file_pattern: all_warp_ipv4.txt
