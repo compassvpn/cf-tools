@@ -29,7 +29,7 @@ import (
 const (
 	asnToFilter = 13335                           // The CloudFlare ASN
 	url         = "https://bgp.tools/table.jsonl" // URL for the JSONL table dump
-	userAgent   = "compassvpn bgp.tools"              // Custom User-Agent header
+	userAgent   = "compassvpn bgp.tools"          // Custom User-Agent header
 
 	ConcurrentPrefixes = 128 // Number of Concurrencies
 	RetryCount         = 3   // Number of retries if one checker fails
@@ -40,7 +40,7 @@ const (
 	TestIPIncrement1 = 13 // First IP to check in a /24 prefix
 	TestIPIncrement2 = 69 // Second IP to check in a /24 prefix
 
-	defaultInputFile      = "all_cf_v4.txt"  // Default output file name: All CloudFlare IPv4 ranges converted to /24 prefixes
+	defaultInputFile      = "all_cf_v4.txt"   // Default output file name: All CloudFlare IPv4 ranges converted to /24 prefixes
 	defaultCDNOutputFile  = "all_cdn_v4.txt"  // Default output file name: All CloudFlare CDN IPv4 with /24 prefixes
 	defaultWARPOutputFile = "all_warp_v4.txt" // Default output file name: All CloudFlare WARP IPv4 with /24 prefixes
 
@@ -588,7 +588,7 @@ func main() {
 		for i := 0; i < len(prefixes); i++ {
 			result := <-ipChannel
 			if result.IsValid {
-				fmt.Printf("Valid CDN IP: %v\n", result.Prefix)
+				fmt.Printf("Valid CDN Prefix: %v\n", result.Prefix)
 				validPrefixes = append(validPrefixes, result.Prefix.String())
 			}
 		}
@@ -641,7 +641,7 @@ func main() {
 		for i := 0; i < len(prefixes); i++ {
 			result := <-ipChannel
 			if result.IsValid {
-				fmt.Printf("Valid WARP IP: %v\n", result.Prefix)
+				fmt.Printf("Valid WARP Prefix: %v\n", result.Prefix)
 				validPrefixes = append(validPrefixes, result.Prefix.String())
 			}
 		}
