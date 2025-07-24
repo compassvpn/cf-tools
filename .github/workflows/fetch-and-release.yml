@@ -1,0 +1,63 @@
+name: Fetch And Release
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Run daily at midnight (UTC)
+  workflow_dispatch:
+
+jobs:
+  fetch-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      CGO_ENABLED: 0
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24.5'
+        check-latest: true
+        
+    - name: Tidy Go modules
+      run: go mod tidy
+
+    - name: Run Fetch and Convert
+      run: go run . -f
+
+    - name: Run CDN Checker
+      run: go run . -c
+
+    - name: Run WARP Checker
+      run: go run . -w
+
+    - name: Set release variables
+      run: |
+        echo "RELEASE_TAG=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+        echo "RELEASE_DATE=$(date -u +'%A %F %T %Z')" >> $GITHUB_ENV
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: ${{ env.RELEASE_TAG }}
+        tag_name: ${{ env.RELEASE_TAG }}
+        draft: false
+        prerelease: false
+        files: |
+          all_cf_v4.txt
+          all_cdn_v4.txt
+          all_warp_v4.txt
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Clean older releases
+      uses: dev-drprasad/delete-older-releases@v0.3.4
+      with:
+        keep_latest: 30
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
