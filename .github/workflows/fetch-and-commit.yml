@@ -1,12 +1,6 @@
 name: Fetch And Commit
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
   schedule:
     - cron: '0 0 * * *' # Run daily at midnight (UTC)
   workflow_dispatch:
