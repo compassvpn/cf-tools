@@ -11,7 +11,7 @@ on:
     - cron: '0 2 * * *'  # Runs at 2 AM every day
   
 jobs:
-  daily-run:
+  fetch-commit:
     runs-on: ubuntu-latest
 
     env:
