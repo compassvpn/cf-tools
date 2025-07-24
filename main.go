@@ -29,13 +29,13 @@ import (
 const (
 	asnToFilter = 13335                           // The CloudFlare ASN
 	url         = "https://bgp.tools/table.jsonl" // URL for the JSONL table dump
-	userAgent   = "compassvpn bgp.tools"          // Custom User-Agent header
+	userAgent   = "compassvpn-cf-tools bgp.tools"          // Custom User-Agent header
 
 	ConcurrentPrefixes = 128 // Number of Concurrencies
-	RetryCount         = 3   // Number of retries if one checker fails
+	RetryCount         = 4   // Number of retries if one checker fails
 
-	RetryDelay     = 150 * time.Millisecond // Delay between each retry
-	RequestTimeout = 250 * time.Millisecond // Timeout delay
+	RetryDelay     = 500 * time.Millisecond // Delay between each retry
+	RequestTimeout = 500 * time.Millisecond // Timeout delay
 
 	TestIPIncrement1 = 13 // First IP to check in a /24 prefix
 	TestIPIncrement2 = 69 // Second IP to check in a /24 prefix
