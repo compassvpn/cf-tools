@@ -40,9 +40,9 @@ const (
 	TestIPIncrement1 = 13 // First IP to check in a /24 prefix
 	TestIPIncrement2 = 69 // Second IP to check in a /24 prefix
 
-	defaultInputFile      = "all_cf_v4_24.txt"  // Default output file name: All CloudFlare IPv4 ranges converted to /24 prefixes
-	defaultCDNOutputFile  = "all_cdn_ipv4.txt"  // Default output file name: All CloudFlare CDN IPv4 with /24 prefixes
-	defaultWARPOutputFile = "all_warp_ipv4.txt" // Default output file name: All CloudFlare WARP IPv4 with /24 prefixes
+	defaultInputFile      = "all_cf_v4.txt"  // Default output file name: All CloudFlare IPv4 ranges converted to /24 prefixes
+	defaultCDNOutputFile  = "all_cdn_v4.txt"  // Default output file name: All CloudFlare CDN IPv4 with /24 prefixes
+	defaultWARPOutputFile = "all_warp_v4.txt" // Default output file name: All CloudFlare WARP IPv4 with /24 prefixes
 
 	// WARP Wireguard configurations
 	privateKeyB64   = "0ALZyBx68KO4by/oQR+3kmPpYbrOuq605aBYv5GKU0Y="
