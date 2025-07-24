@@ -1,4 +1,4 @@
-name: Daily Run
+name: Fetch & Commit
 
 on:
   push:
@@ -87,7 +87,7 @@ jobs:
       - name: Commit output from ./cf-tools -f
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update all_cf_v4_24.txt - ${{ env.TIMESTAMP }}"
+          commit_message: "Auto-Update - ${{ env.TIMESTAMP }}"
           file_pattern: all_cf_v4_24.txt
 
       - name: Wait for 5 seconds
@@ -100,7 +100,7 @@ jobs:
       - name: Commit output from ./cf-tools -c
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update all_cdn_ipv4.txt - ${{ env.TIMESTAMP }}"
+          commit_message: "Auto-Update - ${{ env.TIMESTAMP }}"
           file_pattern: all_cdn_ipv4.txt
 
       - name: Wait for 5 seconds
@@ -113,5 +113,5 @@ jobs:
       - name: Commit output from ./cf-tools -w
         uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update all_warp_ipv4.txt - ${{ env.TIMESTAMP }}"
+          commit_message: "Auto-Update - ${{ env.TIMESTAMP }}"
           file_pattern: all_warp_ipv4.txt
