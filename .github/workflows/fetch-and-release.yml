@@ -51,6 +51,8 @@ jobs:
           all_cf_v4.txt
           all_cdn_v4.txt
           all_warp_v4.txt
+        body: |
+          Auto Updated at ${{ env.RELEASE_DATE }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
