@@ -32,7 +32,7 @@ const (
 	userAgent   = "compassvpn bgp.tools"              // Custom User-Agent header
 
 	ConcurrentPrefixes = 128 // Number of Concurrencies
-	RetryCount         = 3   // Number of retries if one checker is failed
+	RetryCount         = 3   // Number of retries if one checker fails
 
 	RetryDelay     = 150 * time.Millisecond // Delay between each retry
 	RequestTimeout = 250 * time.Millisecond // Timeout delay
