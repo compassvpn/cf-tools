@@ -1,0 +1,55 @@
+name: Fetch & Commit
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 2 * * *'  # Runs at 2 AM every day
+  
+jobs:
+  fetch-and-commit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      CGO_ENABLED: 0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.5'
+          check-latest: true
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Wait for 1 second
+        run: sleep 1
+
+      - name: Run Fetch and Convert
+        run: go run . -f
+
+      - name: Run CDN Checker
+        if: ${{ success() }}
+        run: go run . -c
+
+      - name: Run WARP Checker
+        if: ${{ success() }}
+        run: go run . -w
+
+      - name: Set timestamp
+        run: echo "TIMESTAMP=$(date -u +"%H:%M %d-%m-%Y")" >> $GITHUB_ENV
+        
+      - name: Commit
+        uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "Auto-Update - (${{ env.TIMESTAMP }})"
+          file_pattern: 'all_cf_v4.txt all_cdn_v4.txt all_warp_v4.txt'
