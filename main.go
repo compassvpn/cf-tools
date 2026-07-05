@@ -72,13 +72,13 @@ var (
 	scanPorts = []int{2408} // WARP ports to scan, e.g. {2408, 7559, 2371, 894, ...}
 )
 
-// Prefix mirrors one JSON record from the bgp.tools table dump.
+// Represents one record from the bgp.tools table dump.
 type Prefix struct {
 	CIDR netip.Prefix `json:"CIDR"`
 	ASN  int          `json:"ASN"`
 }
 
-// PrefixResult pairs a prefix with whether it passed a checker.
+// Pairs a prefix with whether it passed a checker.
 type PrefixResult struct {
 	Prefix  netip.Prefix
 	IsValid bool
@@ -93,8 +93,8 @@ func showHelp() {
 	fmt.Println("  -o, --output  Specify the output file name")
 }
 
-// fetchAndFilterPrefixes downloads the BGP table and returns the IPv4 prefixes
-// that belong to one of the given ASNs.
+// Downloads the BGP table and returns the IPv4 prefixes that belong to one of
+// the given ASNs.
 func fetchAndFilterPrefixes(url string, asns []int) ([]netip.Prefix, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -137,8 +137,8 @@ func fetchAndFilterPrefixes(url string, asns []int) ([]netip.Prefix, error) {
 	return v4Prefixes, nil
 }
 
-// convertTo24AndWrite expands prefixes into unique, sorted /24 blocks, writes
-// them to outputFile, and returns them so callers can reuse them without
+// Expands the prefixes into unique, sorted /24 blocks and writes them to
+// outputFile. The blocks are also returned so callers can reuse them without
 // re-reading the file.
 func convertTo24AndWrite(prefixes []netip.Prefix, outputFile string) ([]netip.Prefix, error) {
 	prefixChan := make(chan netip.Prefix, ConcurrentPrefixes)
@@ -185,8 +185,8 @@ func convertTo24AndWrite(prefixes []netip.Prefix, outputFile string) ([]netip.Pr
 	return unique, nil
 }
 
-// processPrefix sends every /24 block inside prefix to out. A prefix that is
-// already /24 or smaller maps to the single /24 that covers it.
+// Sends every /24 block inside prefix to out. Anything already /24 or smaller
+// collapses to the single /24 that covers it.
 func processPrefix(prefix netip.Prefix, out chan<- netip.Prefix) {
 	bits := prefix.Bits()
 	if bits >= 24 {
@@ -200,7 +200,7 @@ func processPrefix(prefix netip.Prefix, out chan<- netip.Prefix) {
 	}
 }
 
-// incrementIP returns ip plus increment, using plain IPv4 (uint32) math.
+// Returns ip advanced by increment, using plain IPv4 (uint32) math.
 func incrementIP(ip netip.Addr, increment int) netip.Addr {
 	b := ip.As4()
 	n := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
@@ -208,8 +208,8 @@ func incrementIP(ip netip.Addr, increment int) netip.Addr {
 	return netip.AddrFrom4([4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)})
 }
 
-// isValidCDNIP reports whether ip serves a Cloudflare /cdn-cgi/trace response,
-// retrying a few times before giving up.
+// Reports whether ip serves a Cloudflare /cdn-cgi/trace response, retrying a
+// few times before giving up.
 func isValidCDNIP(ip netip.Addr) bool {
 	url := fmt.Sprintf("http://%s/cdn-cgi/trace", ip)
 	for i := 0; i < RetryCount; i++ {
@@ -223,9 +223,9 @@ func isValidCDNIP(ip netip.Addr) bool {
 	return false
 }
 
-// servesCloudflareTrace reports whether url returns a real Cloudflare trace body.
-// Checking the body, not just the 200, keeps unrelated web servers on the same
-// IP from being counted as Cloudflare.
+// Reports whether url returns a real Cloudflare trace body. Checking the body,
+// not just the 200 status, keeps an unrelated web server on the same IP from
+// being counted as Cloudflare.
 func servesCloudflareTrace(url string) bool {
 	resp, err := httpClient.Get(url)
 	if err != nil {
@@ -243,8 +243,8 @@ func servesCloudflareTrace(url string) bool {
 	return bytes.Contains(body, []byte("colo="))
 }
 
-// prefixHasValidIP reports whether any sampled IP in the /24 passes check. The
-// probes run concurrently and it returns as soon as one succeeds.
+// Reports whether any sampled IP in the /24 passes check. The probes run
+// concurrently, so it returns as soon as one of them succeeds.
 func prefixHasValidIP(prefix netip.Prefix, check func(netip.Addr) bool) bool {
 	base := prefix.Addr()
 	found := make(chan struct{}, len(testIPOffsets))
@@ -269,7 +269,7 @@ func prefixHasValidIP(prefix netip.Prefix, check func(netip.Addr) bool) bool {
 	return ok
 }
 
-// staticKeypair builds a static keypair from a base64-encoded private key.
+// Builds a static keypair from a base64-encoded private key.
 func staticKeypair(privateKeyBase64 string) (noise.DHKey, error) {
 	privateKey, err := base64.StdEncoding.DecodeString(privateKeyBase64)
 	if err != nil {
@@ -286,7 +286,7 @@ func staticKeypair(privateKeyBase64 string) (noise.DHKey, error) {
 	}, nil
 }
 
-// ephemeralKeypair generates a random ephemeral keypair.
+// Generates a random ephemeral keypair.
 func ephemeralKeypair() (noise.DHKey, error) {
 	ephemeralPrivateKey := make([]byte, 32)
 	if _, err := rand.Read(ephemeralPrivateKey); err != nil {
@@ -304,15 +304,15 @@ func ephemeralKeypair() (noise.DHKey, error) {
 	}, nil
 }
 
-// uint32ToBytes encodes n as little-endian bytes.
+// Encodes n as little-endian bytes.
 func uint32ToBytes(n uint32) []byte {
 	b := make([]byte, 4)
 	binary.LittleEndian.PutUint32(b, n)
 	return b
 }
 
-// initiateHandshake performs a WireGuard handshake with the server and returns
-// the round-trip time on success.
+// Performs a WireGuard handshake with the server and returns the round-trip
+// time on success.
 func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKeyBase64, presharedKeyBase64 string) (time.Duration, error) {
 	staticKeyPair, err := staticKeypair(privateKeyBase64)
 	if err != nil {
@@ -431,8 +431,8 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 	return rtt, nil
 }
 
-// isValidWarpIP reports whether a WireGuard handshake with the WARP peer
-// succeeds on any scanned port.
+// Reports whether a WireGuard handshake with the WARP peer succeeds on any of
+// the scanned ports.
 func isValidWarpIP(ip netip.Addr) bool {
 	for _, port := range scanPorts {
 		addr := netip.AddrPortFrom(ip, uint16(port))
@@ -448,8 +448,8 @@ func isValidWarpIP(ip netip.Addr) bool {
 	return false
 }
 
-// runChecker probes every prefix with check and writes the passing /24 prefixes,
-// sorted, to outputFile. label only appears in the progress output.
+// Probes every prefix with check and writes the passing /24 blocks, sorted, to
+// outputFile. The label only appears in the progress output.
 func runChecker(prefixes []netip.Prefix, check func(netip.Addr) bool, outputFile, label string) error {
 	results := make(chan PrefixResult)
 	sem := make(chan struct{}, ConcurrentPrefixes)
