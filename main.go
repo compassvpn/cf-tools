@@ -10,14 +10,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"math/big"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,63 +24,66 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-var (
-	asnsToFilter = []int{
-		13335,
-		209242,
-		14789,
-		202623,
-		203898,
-		394536,
-		395747,
-		139242,
-		132892,
-	}
-	url       = "https://bgp.tools/table.jsonl" // URL for the JSONL table dump
-	userAgent = "compassvpn-cf-tools bgp.tools" // Custom User-Agent header
-)
+// Cloudflare ASNs to keep from the BGP table.
+var asnsToFilter = []int{
+	13335,
+	209242,
+	14789,
+	202623,
+	203898,
+	394536,
+	395747,
+	139242,
+	132892,
+}
+
+// Host offsets sampled inside each /24. If any of these answers a probe, the
+// whole block counts as Cloudflare, so we avoid testing all 256 addresses.
+var testIPOffsets = []int{8, 13, 69, 144, 234}
 
 const (
-	ConcurrentPrefixes = 55 // Number of Concurrencies
-	RetryCount         = 4  // Number of retries if one checker fails
+	bgpTableURL = "https://bgp.tools/table.jsonl" // table dump, one JSON record per line
+	userAgent   = "compassvpn-cf-tools bgp.tools" // User-Agent sent to bgp.tools
 
-	RetryDelay     = 1 * time.Second // Delay between each retry
-	RequestTimeout = 4 * time.Second // Timeout delay
+	ConcurrentPrefixes = 55              // how many prefixes to scan at once
+	RetryCount         = 4               // attempts per probe before giving up
+	RetryDelay         = 1 * time.Second // wait between attempts
+	RequestTimeout     = 4 * time.Second // timeout for one CDN HTTP probe
+	FetchTimeout       = 2 * time.Minute // timeout for downloading the whole table
 
-	TestIPIncrement1 = 8   // First IP to check in a /24 prefix (Changed from 13 to 8)
-	TestIPIncrement2 = 13  // Second IP to check in a /24 prefix
-	TestIPIncrement3 = 69  // Third IP to check in a /24 prefix
-	TestIPIncrement4 = 144 // Fourth IP to check in a /24 prefix
-	TestIPIncrement5 = 234 // Fifth IP to check in a /24 prefix
+	defaultInputFile      = "all_cf_v4.txt"   // every Cloudflare /24
+	defaultCDNOutputFile  = "all_cdn_v4.txt"  // /24s that answer as CDN
+	defaultWARPOutputFile = "all_warp_v4.txt" // /24s that answer as WARP
 
-	defaultInputFile      = "all_cf_v4.txt"   // Default output file name: All CloudFlare IPv4 ranges converted to /24 prefixes
-	defaultCDNOutputFile  = "all_cdn_v4.txt"  // Default output file name: All CloudFlare CDN IPv4 with /24 prefixes
-	defaultWARPOutputFile = "all_warp_v4.txt" // Default output file name: All CloudFlare WARP IPv4 with /24 prefixes
-
-	// WARP Wireguard configurations
+	// WARP WireGuard keys. These are Cloudflare's public defaults, not secrets.
 	privateKeyB64   = "0ALZyBx68KO4by/oQR+3kmPpYbrOuq605aBYv5GKU0Y="
 	publicKeyB64    = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
 	presharedKeyB64 = ""
 )
 
 var (
-	httpClient = &http.Client{Timeout: RequestTimeout}
-	scanPorts  = []int{2408} // List of ports to scan WARP. Example: {2408, 7559, 2371, 894, ...}
+	httpClient = &http.Client{
+		Timeout: RequestTimeout,
+		// Don't follow redirects. We only trust the direct response from the probed IP.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	scanPorts = []int{2408} // WARP ports to scan, e.g. {2408, 7559, 2371, 894, ...}
 )
 
-// Prefix structure for JSON parsing
+// Represents one record from the bgp.tools table dump.
 type Prefix struct {
 	CIDR netip.Prefix `json:"CIDR"`
 	ASN  int          `json:"ASN"`
 }
 
-// Holds the result of prefix processing
+// Pairs a prefix with whether it passed a checker.
 type PrefixResult struct {
 	Prefix  netip.Prefix
 	IsValid bool
 }
 
-// Helper function to show usage
 func showHelp() {
 	fmt.Println("Usage:")
 	fmt.Println("  -h, --help    Show help")
@@ -92,78 +93,56 @@ func showHelp() {
 	fmt.Println("  -o, --output  Specify the output file name")
 }
 
-// Fetches the prefixes from the URL and filters them by the given ASNs
+// Downloads the BGP table and returns the IPv4 prefixes that belong to one of
+// the given ASNs.
 func fetchAndFilterPrefixes(url string, asns []int) ([]netip.Prefix, error) {
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-
-	// Set the custom User-Agent header
 	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: FetchTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("making request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check for non-200 status codes
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("received non-200 status code %d", resp.StatusCode)
+	}
+
+	// Build a set once so each line is a map lookup rather than a slice scan.
+	wanted := make(map[int]struct{}, len(asns))
+	for _, asn := range asns {
+		wanted[asn] = struct{}{}
 	}
 
 	var v4Prefixes []netip.Prefix
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		var prefix Prefix
-		line := scanner.Text()
-
-		// Decode each JSON object
-		if err := json.Unmarshal([]byte(line), &prefix); err != nil {
+		if err := json.Unmarshal(scanner.Bytes(), &prefix); err != nil {
 			fmt.Printf("Error decoding JSON line: %v\n", err)
 			continue
 		}
-
-		// Filter for the specified ASNs and store IPv4 prefixes
-		isTargetASN := false
-		for _, asn := range asns {
-			if prefix.ASN == asn {
-				isTargetASN = true
-				break
-			}
-		}
-
-		if isTargetASN && !prefix.CIDR.Addr().Is6() {
+		if _, ok := wanted[prefix.ASN]; ok && !prefix.CIDR.Addr().Is6() {
 			v4Prefixes = append(v4Prefixes, prefix.CIDR)
 		}
 	}
-
-	// Check for errors during scanning
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scanning response: %w", err)
 	}
-
 	return v4Prefixes, nil
 }
 
-// Converts the prefixes to /24 blocks and writes them to the output file
-func convertTo24AndWrite(prefixes []netip.Prefix, outputFile string) error {
-	outFile, err := os.Create(outputFile)
-	if err != nil {
-		return fmt.Errorf("creating output file: %w", err)
-	}
-	defer outFile.Close()
-
-	writer := bufio.NewWriter(outFile)
-	defer writer.Flush()
-
-	unique24s := make(map[string]struct{})
+// Expands the prefixes into unique, sorted /24 blocks and writes them to
+// outputFile. The blocks are also returned so callers can reuse them without
+// re-reading the file.
+func convertTo24AndWrite(prefixes []netip.Prefix, outputFile string) ([]netip.Prefix, error) {
+	prefixChan := make(chan netip.Prefix, ConcurrentPrefixes)
 	var wg sync.WaitGroup
-	prefixChan := make(chan string, len(prefixes))
-
-	// Process each prefix in a separate goroutine
 	for _, prefix := range prefixes {
 		wg.Add(1)
 		go func(p netip.Prefix) {
@@ -171,141 +150,126 @@ func convertTo24AndWrite(prefixes []netip.Prefix, outputFile string) error {
 			processPrefix(p, prefixChan)
 		}(prefix)
 	}
-
-	// Close the channel once all processing is done
 	go func() {
 		wg.Wait()
 		close(prefixChan)
 	}()
 
-	// Collect processed prefixes
-	var sortedPrefixes []string
-	for line := range prefixChan {
-		if _, exists := unique24s[line]; !exists {
-			unique24s[line] = struct{}{}
-			sortedPrefixes = append(sortedPrefixes, line)
+	seen := make(map[netip.Prefix]struct{})
+	var unique []netip.Prefix
+	for p := range prefixChan {
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			unique = append(unique, p)
 		}
 	}
-
-	// Sort prefixes
-	sort.Slice(sortedPrefixes, func(i, j int) bool {
-		return compareIPs(sortedPrefixes[i], sortedPrefixes[j])
+	sort.Slice(unique, func(i, j int) bool {
+		return unique[i].Addr().Less(unique[j].Addr())
 	})
 
-	for _, prefix := range sortedPrefixes {
-		if _, err := writer.WriteString(prefix + "\n"); err != nil {
-			return fmt.Errorf("writing to output file: %w", err)
+	out, err := os.Create(outputFile)
+	if err != nil {
+		return nil, fmt.Errorf("creating output file: %w", err)
+	}
+	defer out.Close()
+
+	writer := bufio.NewWriter(out)
+	for _, p := range unique {
+		if _, err := writer.WriteString(p.String() + "\n"); err != nil {
+			return nil, fmt.Errorf("writing to output file: %w", err)
 		}
 	}
-
-	return nil
-}
-
-// Compares two IP addresses based on the first three octets
-func compareIPs(ip1, ip2 string) bool {
-	parts1 := strings.Split(ip1, ".")
-	parts2 := strings.Split(ip2, ".")
-
-	for i := 0; i < 3; i++ {
-		num1, _ := strconv.Atoi(parts1[i])
-		num2, _ := strconv.Atoi(parts2[i])
-		if num1 != num2 {
-			return num1 < num2
-		}
+	if err := writer.Flush(); err != nil {
+		return nil, fmt.Errorf("flushing output file: %w", err)
 	}
-
-	return false
+	return unique, nil
 }
 
-// Processes a single prefix and sends /24 blocks to the channel
-func processPrefix(prefix netip.Prefix, prefixChan chan<- string) {
-	ip := prefix.Addr()
-	prefixLen := prefix.Bits()
-
-	// Directly send /24 prefixes
-	if prefixLen == 24 {
-		prefixChan <- prefix.String()
+// Sends every /24 block inside prefix to out. Anything already /24 or smaller
+// collapses to the single /24 that covers it.
+func processPrefix(prefix netip.Prefix, out chan<- netip.Prefix) {
+	bits := prefix.Bits()
+	if bits >= 24 {
+		out <- netip.PrefixFrom(prefix.Addr(), 24).Masked()
 		return
 	}
-
-	ipInt := ipToInt(ip)
-	numBlocks := 1 << (24 - prefixLen)
-	for i := 0; i < numBlocks; i++ {
-		ip := intToIP(ipInt)
-		net24 := netip.PrefixFrom(ip, 24).String()
-		prefixChan <- net24
-		incrementIPBy24(ipInt)
+	ip := prefix.Addr()
+	for i := 0; i < 1<<(24-bits); i++ {
+		out <- netip.PrefixFrom(ip, 24).Masked()
+		ip = incrementIP(ip, 256)
 	}
 }
 
-// Converts an IP address to a big integer
-func ipToInt(ip netip.Addr) *big.Int {
-	ipInt := big.NewInt(0)
-	ipInt.SetBytes(ip.AsSlice())
-	return ipInt
+// Returns ip advanced by increment, using plain IPv4 (uint32) math.
+func incrementIP(ip netip.Addr, increment int) netip.Addr {
+	b := ip.As4()
+	n := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+	n += uint32(increment)
+	return netip.AddrFrom4([4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)})
 }
 
-// Increments an IP address by one /24 block using bit shift operations
-func incrementIPBy24(ipInt *big.Int) {
-	increment := big.NewInt(1 << 8) // 256 for /24
-	ipInt.Add(ipInt, increment)
-}
-
-// Converts a big integer back to an IP address
-func intToIP(ipInt *big.Int) netip.Addr {
-	ipBytes := make([]byte, 4)
-	ipInt.FillBytes(ipBytes)
-	ip, _ := netip.AddrFromSlice(ipBytes)
-	return ip
-}
-
-// Checks if an IP address responds with StatusOK for the CDN trace URL.
+// Reports whether ip serves a Cloudflare /cdn-cgi/trace response, retrying a
+// few times before giving up.
 func isValidCDNIP(ip netip.Addr) bool {
 	url := fmt.Sprintf("http://%s/cdn-cgi/trace", ip)
-
 	for i := 0; i < RetryCount; i++ {
-		resp, err := httpClient.Head(url)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return true
-			}
+		if servesCloudflareTrace(url) {
+			return true
 		}
-		time.Sleep(RetryDelay)
+		if i < RetryCount-1 {
+			time.Sleep(RetryDelay)
+		}
 	}
 	return false
 }
 
-// Increments the given IP address by a specified value.
-func incrementIP(ip netip.Addr, increment int) netip.Addr {
-	ipBytes := ip.As4()
-	ipUint := uint32(ipBytes[0])<<24 | uint32(ipBytes[1])<<16 | uint32(ipBytes[2])<<8 | uint32(ipBytes[3])
-	ipUint += uint32(increment)
-	newIP := netip.AddrFrom4([4]byte{byte(ipUint >> 24), byte(ipUint >> 16), byte(ipUint >> 8), byte(ipUint)})
-	return newIP
-}
-
-// Checks if any IP within the prefix is a CDN IP.
-func processPrefixCDN(prefix netip.Prefix) bool {
-	baseIP := prefix.Addr()
-	testIP1 := incrementIP(baseIP, TestIPIncrement1)
-	testIP2 := incrementIP(baseIP, TestIPIncrement2)
-	testIP3 := incrementIP(baseIP, TestIPIncrement3)
-	testIP4 := incrementIP(baseIP, TestIPIncrement4)
-	testIP5 := incrementIP(baseIP, TestIPIncrement5)
-	return isValidCDNIP(testIP1) || isValidCDNIP(testIP2) || isValidCDNIP(testIP3) || isValidCDNIP(testIP4) || isValidCDNIP(testIP5)
-}
-
-// Processes each prefix and sends the result to the channel.
-func parallelFunctionCDN(ipChannel chan PrefixResult, prefix netip.Prefix) {
-	isValid := processPrefixCDN(prefix)
-	ipChannel <- PrefixResult{
-		Prefix:  prefix,
-		IsValid: isValid,
+// Reports whether url returns a real Cloudflare trace body. Checking the body,
+// not just the 200 status, keeps an unrelated web server on the same IP from
+// being counted as Cloudflare.
+func servesCloudflareTrace(url string) bool {
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return false
 	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return false
+	}
+	// The trace endpoint always reports the Cloudflare colo that served it.
+	return bytes.Contains(body, []byte("colo="))
 }
 
-// Generates a static keypair from a base64-encoded private key
+// Reports whether any sampled IP in the /24 passes check. The probes run
+// concurrently, so it returns as soon as one of them succeeds.
+func prefixHasValidIP(prefix netip.Prefix, check func(netip.Addr) bool) bool {
+	base := prefix.Addr()
+	found := make(chan struct{}, len(testIPOffsets))
+	var wg sync.WaitGroup
+	for _, off := range testIPOffsets {
+		wg.Add(1)
+		go func(ip netip.Addr) {
+			defer wg.Done()
+			if check(ip) {
+				found <- struct{}{}
+			}
+		}(incrementIP(base, off))
+	}
+	go func() {
+		wg.Wait()
+		close(found)
+	}()
+
+	// Receives once if any probe reported success, or reads the closed channel
+	// (ok == false) once they all finish without one.
+	_, ok := <-found
+	return ok
+}
+
+// Builds a static keypair from a base64-encoded private key.
 func staticKeypair(privateKeyBase64 string) (noise.DHKey, error) {
 	privateKey, err := base64.StdEncoding.DecodeString(privateKeyBase64)
 	if err != nil {
@@ -322,7 +286,7 @@ func staticKeypair(privateKeyBase64 string) (noise.DHKey, error) {
 	}, nil
 }
 
-// Generates an ephemeral keypair
+// Generates a random ephemeral keypair.
 func ephemeralKeypair() (noise.DHKey, error) {
 	ephemeralPrivateKey := make([]byte, 32)
 	if _, err := rand.Read(ephemeralPrivateKey); err != nil {
@@ -340,14 +304,15 @@ func ephemeralKeypair() (noise.DHKey, error) {
 	}, nil
 }
 
-// Converts a uint32 to a byte slice
+// Encodes n as little-endian bytes.
 func uint32ToBytes(n uint32) []byte {
 	b := make([]byte, 4)
 	binary.LittleEndian.PutUint32(b, n)
 	return b
 }
 
-// Initiates a handshake with the server and returns the round-trip time (RTT)
+// Performs a WireGuard handshake with the server and returns the round-trip
+// time on success.
 func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKeyBase64, presharedKeyBase64 string) (time.Duration, error) {
 	staticKeyPair, err := staticKeypair(privateKeyBase64)
 	if err != nil {
@@ -391,7 +356,7 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 	}
 
 	now := time.Now().UTC()
-	epochOffset := int64(4611686018427387914) // TAI offset from Unix epoch
+	epochOffset := int64(4611686018427387914) // TAI64 epoch offset (2^62 + 10 leap seconds)
 
 	tai64nTimestampBuf := make([]byte, 0, 16)
 	tai64nTimestampBuf = binary.BigEndian.AppendUint64(tai64nTimestampBuf, uint64(epochOffset+now.Unix()))
@@ -401,6 +366,7 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 		return 0, err
 	}
 
+	// Writes to a bytes.Buffer never fail, so their errors are safe to ignore.
 	initiationPacket := new(bytes.Buffer)
 	binary.Write(initiationPacket, binary.BigEndian, []byte{0x01, 0x00, 0x00, 0x00})
 	binary.Write(initiationPacket, binary.BigEndian, uint32ToBytes(28))
@@ -411,8 +377,7 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 	if err != nil {
 		return 0, err
 	}
-	_, err = hasher.Write(initiationPacket.Bytes())
-	if err != nil {
+	if _, err := hasher.Write(initiationPacket.Bytes()); err != nil {
 		return 0, err
 	}
 	initiationPacketMAC := hasher.Sum(nil)
@@ -426,14 +391,15 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 	}
 	defer conn.Close()
 
-	_, err = initiationPacket.WriteTo(conn)
-	if err != nil {
+	if _, err := initiationPacket.WriteTo(conn); err != nil {
 		return 0, err
 	}
 	t0 := time.Now()
 
 	response := make([]byte, 92)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return 0, err
+	}
 	i, err := conn.Read(response)
 	if err != nil {
 		return 0, err
@@ -465,225 +431,141 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 	return rtt, nil
 }
 
-// Checks if an IP address responds with StatusOK for the WARP trace URL on any of the given ports
+// Reports whether a WireGuard handshake with the WARP peer succeeds on any of
+// the scanned ports.
 func isValidWarpIP(ip netip.Addr) bool {
 	for _, port := range scanPorts {
-		ip2 := netip.AddrPortFrom(ip, uint16(port))
-
+		addr := netip.AddrPortFrom(ip, uint16(port))
 		for i := 0; i < RetryCount; i++ {
-			_, err := initiateHandshake(ip2, privateKeyB64, publicKeyB64, presharedKeyB64)
-			if err == nil {
+			if _, err := initiateHandshake(addr, privateKeyB64, publicKeyB64, presharedKeyB64); err == nil {
 				return true
 			}
-			time.Sleep(RetryDelay)
+			if i < RetryCount-1 {
+				time.Sleep(RetryDelay)
+			}
 		}
 	}
 	return false
 }
 
-// Checks if any IP within the prefix is a WARP IP
-func processPrefixWARP(prefix netip.Prefix) bool {
-	baseIP := prefix.Addr()
-	testIP1 := incrementIP(baseIP, TestIPIncrement1)
-	testIP2 := incrementIP(baseIP, TestIPIncrement2)
-	testIP3 := incrementIP(baseIP, TestIPIncrement3)
-	testIP4 := incrementIP(baseIP, TestIPIncrement4)
-	testIP5 := incrementIP(baseIP, TestIPIncrement5)
-	return isValidWarpIP(testIP1) || isValidWarpIP(testIP2) || isValidWarpIP(testIP3) || isValidWarpIP(testIP4) || isValidWarpIP(testIP5)
-}
+// Probes every prefix with check and writes the passing /24 blocks, sorted, to
+// outputFile. The label only appears in the progress output.
+func runChecker(prefixes []netip.Prefix, check func(netip.Addr) bool, outputFile, label string) error {
+	results := make(chan PrefixResult)
+	sem := make(chan struct{}, ConcurrentPrefixes)
+	go func() {
+		for _, prefix := range prefixes {
+			sem <- struct{}{}
+			go func(p netip.Prefix) {
+				defer func() { <-sem }()
+				results <- PrefixResult{Prefix: p, IsValid: prefixHasValidIP(p, check)}
+			}(prefix)
+		}
+	}()
 
-// Processes each prefix and sends the result to the channel
-func parallelFunctionWARP(ipChannel chan PrefixResult, prefix netip.Prefix) {
-	isValid := processPrefixWARP(prefix)
-	ipChannel <- PrefixResult{
-		Prefix:  prefix,
-		IsValid: isValid,
+	var valid []netip.Prefix
+	for range prefixes {
+		if r := <-results; r.IsValid {
+			fmt.Printf("Valid %s Prefix: %v\n", label, r.Prefix)
+			valid = append(valid, r.Prefix)
+		}
 	}
+	close(results)
+
+	sort.Slice(valid, func(i, j int) bool {
+		return valid[i].Addr().Less(valid[j].Addr())
+	})
+
+	out, err := os.Create(outputFile)
+	if err != nil {
+		return fmt.Errorf("creating output file: %w", err)
+	}
+	defer out.Close()
+
+	writer := bufio.NewWriter(out)
+	for _, p := range valid {
+		if _, err := writer.WriteString(p.String() + "\n"); err != nil {
+			return fmt.Errorf("writing output: %w", err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("flushing output: %w", err)
+	}
+
+	fmt.Printf("Processing complete. Valid /24 prefixes written to %s\n", outputFile)
+	return nil
 }
 
 func main() {
-	// Define flags
-	helpFlag := flag.Bool("h", false, "Show help")
-	helpFlagLong := flag.Bool("help", false, "Show help")
-	cdnFlag := flag.Bool("c", false, "Run the CDN checker")
-	cdnFlagLong := flag.Bool("cdn", false, "Run the CDN checker")
-	warpFlag := flag.Bool("w", false, "Run the WARP checker")
-	warpFlagLong := flag.Bool("warp", false, "Run the WARP checker")
-	fetchFlag := flag.Bool("f", false, "Fetch and convert to /24 only")
-	fetchFlagLong := flag.Bool("fetch", false, "Fetch and convert to /24 only")
-	outputFile := flag.String("o", "", "Specify the output file name")
-	outputFileLong := flag.String("output", "", "Specify the output file name")
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+}
 
+func run() error {
+	help := flag.Bool("h", false, "Show help")
+	flag.BoolVar(help, "help", false, "Show help")
+	cdn := flag.Bool("c", false, "Run the CDN checker")
+	flag.BoolVar(cdn, "cdn", false, "Run the CDN checker")
+	warp := flag.Bool("w", false, "Run the WARP checker")
+	flag.BoolVar(warp, "warp", false, "Run the WARP checker")
+	fetch := flag.Bool("f", false, "Fetch and convert to /24 only")
+	flag.BoolVar(fetch, "fetch", false, "Fetch and convert to /24 only")
+	output := flag.String("o", "", "Specify the output file name")
+	flag.StringVar(output, "output", "", "Specify the output file name")
 	flag.Parse()
 
-	// If no flag is provided, show help
-	if !*helpFlag && !*helpFlagLong && !*cdnFlag && !*cdnFlagLong && !*warpFlag && !*warpFlagLong && !*fetchFlag && !*fetchFlagLong {
+	if *help || (!*cdn && !*warp && !*fetch) {
 		showHelp()
-		return
+		return nil
 	}
 
-	if *helpFlag || *helpFlagLong {
-		showHelp()
-		return
+	// A single -o can't name two outputs, so refuse to run both checkers with it.
+	if *output != "" && *cdn && *warp {
+		return errors.New("-o cannot be used when running both -c and -w; they would overwrite each other")
 	}
 
-	// Fetch and filter the prefixes
-	v4Prefixes, err := fetchAndFilterPrefixes(url, asnsToFilter)
+	prefixes, err := fetchAndFilterPrefixes(bgpTableURL, asnsToFilter)
 	if err != nil {
-		fmt.Printf("Error fetching and filtering prefixes: %v\n", err)
-		return
+		return fmt.Errorf("fetching prefixes: %w", err)
+	}
+	if len(prefixes) == 0 {
+		return errors.New("no matching prefixes found (the upstream feed may have changed)")
 	}
 
-	// Determine the output file
-	output := defaultInputFile
-	if *outputFile != "" {
-		output = *outputFile
+	fetchOutput := defaultInputFile
+	if *output != "" {
+		fetchOutput = *output
 	}
-	if *outputFileLong != "" {
-		output = *outputFileLong
-	}
-
-	// Convert the prefixes to /24 and write to the intermediate file
-	err = convertTo24AndWrite(v4Prefixes, output)
+	blocks, err := convertTo24AndWrite(prefixes, fetchOutput)
 	if err != nil {
-		fmt.Printf("Error converting to /24 and writing to file: %v\n", err)
-		return
+		return fmt.Errorf("converting to /24: %w", err)
 	}
 
-	// If fetch-only flag is set, exit after converting and writing the prefixes
-	if *fetchFlag || *fetchFlagLong {
-		fmt.Println("Prefixes fetched and converted to /24. Output written to", output)
-		return
+	if *fetch {
+		fmt.Println("Prefixes fetched and converted to /24. Output written to", fetchOutput)
+		return nil
 	}
 
-	// Open intermediate file containing IP prefixes
-	file, err := os.Open(output)
-	if err != nil {
-		fmt.Printf("Error opening file: %v\n", err)
-		return
-	}
-	defer file.Close()
-
-	// Read all prefixes and store them in a map to avoid duplicates
-	prefixSet := make(map[string]struct{})
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		prefixString := scanner.Text()
-		prefixSet[prefixString] = struct{}{}
-	}
-
-	// Convert the map keys back to a slice
-	var prefixes []netip.Prefix
-	for prefixString := range prefixSet {
-		prefix, err := netip.ParsePrefix(prefixString)
-		if err == nil {
-			prefixes = append(prefixes, prefix)
+	if *cdn {
+		out := defaultCDNOutputFile
+		if *output != "" {
+			out = *output
+		}
+		if err := runChecker(blocks, isValidCDNIP, out, "CDN"); err != nil {
+			return fmt.Errorf("CDN checker: %w", err)
 		}
 	}
 
-	if *cdnFlag || *cdnFlagLong {
-		output := defaultCDNOutputFile
-		if *outputFile != "" {
-			output = *outputFile
+	if *warp {
+		out := defaultWARPOutputFile
+		if *output != "" {
+			out = *output
 		}
-		if *outputFileLong != "" {
-			output = *outputFileLong
+		if err := runChecker(blocks, isValidWarpIP, out, "WARP"); err != nil {
+			return fmt.Errorf("WARP checker: %w", err)
 		}
-
-		// Create output file for valid CDN IP prefixes
-		outputFile, err := os.Create(output)
-		if err != nil {
-			fmt.Printf("Error creating output file: %v\n", err)
-			return
-		}
-		defer outputFile.Close()
-
-		ipChannel := make(chan PrefixResult)
-		sem := make(chan struct{}, ConcurrentPrefixes)
-
-		// Process prefixes concurrently with limited concurrency
-		go func() {
-			for _, prefix := range prefixes {
-				sem <- struct{}{}
-				go func(prefix netip.Prefix) {
-					defer func() { <-sem }()
-					parallelFunctionCDN(ipChannel, prefix)
-				}(prefix)
-			}
-		}()
-
-		var validPrefixes []string
-		// Collect results and store valid prefixes
-		for i := 0; i < len(prefixes); i++ {
-			result := <-ipChannel
-			if result.IsValid {
-				fmt.Printf("Valid CDN Prefix: %v\n", result.Prefix)
-				validPrefixes = append(validPrefixes, result.Prefix.String())
-			}
-		}
-		close(ipChannel)
-
-		// Sort and write valid prefixes to the output file
-		sort.Slice(validPrefixes, func(i, j int) bool {
-			return compareIPs(validPrefixes[i], validPrefixes[j])
-		})
-		for _, prefix := range validPrefixes {
-			outputFile.WriteString(prefix + "\n")
-		}
-
-		fmt.Println("Processing complete. Valid /24 prefixes have been written to", output)
 	}
-
-	if *warpFlag || *warpFlagLong {
-		output := defaultWARPOutputFile
-		if *outputFile != "" {
-			output = *outputFile
-		}
-		if *outputFileLong != "" {
-			output = *outputFileLong
-		}
-
-		// Create output file for valid WARP IP prefixes
-		outputFile, err := os.Create(output)
-		if err != nil {
-			fmt.Printf("Error creating output file: %v\n", err)
-			return
-		}
-		defer outputFile.Close()
-
-		ipChannel := make(chan PrefixResult)
-		sem := make(chan struct{}, ConcurrentPrefixes)
-
-		// Process prefixes concurrently with limited concurrency
-		go func() {
-			for _, prefix := range prefixes {
-				sem <- struct{}{}
-				go func(prefix netip.Prefix) {
-					defer func() { <-sem }()
-					parallelFunctionWARP(ipChannel, prefix)
-				}(prefix)
-			}
-		}()
-
-		var validPrefixes []string
-		// Collect results and store valid prefixes
-		for i := 0; i < len(prefixes); i++ {
-			result := <-ipChannel
-			if result.IsValid {
-				fmt.Printf("Valid WARP Prefix: %v\n", result.Prefix)
-				validPrefixes = append(validPrefixes, result.Prefix.String())
-			}
-		}
-		close(ipChannel)
-
-		// Sort and write valid prefixes to the output file
-		sort.Slice(validPrefixes, func(i, j int) bool {
-			return compareIPs(validPrefixes[i], validPrefixes[j])
-		})
-		for _, prefix := range validPrefixes {
-			outputFile.WriteString(prefix + "\n")
-		}
-
-		fmt.Println("Processing complete. Valid /24 prefixes have been written to", output)
-	}
+	return nil
 }

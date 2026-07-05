@@ -8,6 +8,7 @@ on:
 jobs:
   fetch-and-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 350 # fail before GitHub's 6h hard cap so a slow run doesn't publish partial data
     permissions:
       contents: write
     env:
@@ -22,18 +23,18 @@ jobs:
       with:
         go-version: '1.24.5'
         check-latest: true
-        
-    - name: Tidy Go modules
-      run: go mod tidy
 
-    - name: Run Fetch and Convert
-      run: go run . -f
+    - name: Download dependencies
+      run: go mod download
 
-    - name: Run CDN Checker
-      run: go run . -c
+    - name: Fetch, convert, and scan
+      run: go run . -c -w # single fetch, produces all three lists
 
-    - name: Run WARP Checker
-      run: go run . -w
+    - name: Verify output files are non-empty
+      run: |
+        test -s all_cf_v4.txt
+        test -s all_cdn_v4.txt
+        test -s all_warp_v4.txt
 
     - name: Set release variables
       run: |
@@ -47,6 +48,7 @@ jobs:
         tag_name: ${{ env.RELEASE_TAG }}
         draft: false
         prerelease: false
+        fail_on_unmatched_files: true
         files: |
           all_cf_v4.txt
           all_cdn_v4.txt
