@@ -16,10 +16,10 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Setup Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version: '1.24.5'
         check-latest: true
@@ -42,7 +42,7 @@ jobs:
         echo "RELEASE_DATE=$(date -u +'%A %F %T %Z')" >> $GITHUB_ENV
 
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with:
         name: ${{ env.RELEASE_TAG }}
         tag_name: ${{ env.RELEASE_TAG }}
