@@ -24,7 +24,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// ASNs whose prefixes we keep from the BGP table.
+// Cloudflare ASNs to keep from the BGP table.
 var asnsToFilter = []int{
 	13335,
 	209242,
@@ -37,24 +37,25 @@ var asnsToFilter = []int{
 	132892,
 }
 
-// Host offsets probed inside each /24 prefix.
+// Host offsets sampled inside each /24. If any of these answers a probe, the
+// whole block counts as Cloudflare, so we avoid testing all 256 addresses.
 var testIPOffsets = []int{8, 13, 69, 144, 234}
 
 const (
-	bgpTableURL = "https://bgp.tools/table.jsonl" // JSONL BGP table dump
-	userAgent   = "compassvpn-cf-tools bgp.tools" // custom User-Agent header
+	bgpTableURL = "https://bgp.tools/table.jsonl" // table dump, one JSON record per line
+	userAgent   = "compassvpn-cf-tools bgp.tools" // User-Agent sent to bgp.tools
 
-	ConcurrentPrefixes = 55              // max prefixes scanned in parallel
+	ConcurrentPrefixes = 55              // how many prefixes to scan at once
 	RetryCount         = 4               // attempts per probe before giving up
-	RetryDelay         = 1 * time.Second // delay between attempts
-	RequestTimeout     = 4 * time.Second // per-probe timeout
-	FetchTimeout       = 2 * time.Minute // timeout for the full table download
+	RetryDelay         = 1 * time.Second // wait between attempts
+	RequestTimeout     = 4 * time.Second // timeout for one CDN HTTP probe
+	FetchTimeout       = 2 * time.Minute // timeout for downloading the whole table
 
-	defaultInputFile      = "all_cf_v4.txt"   // all Cloudflare IPv4 ranges as /24 prefixes
-	defaultCDNOutputFile  = "all_cdn_v4.txt"  // Cloudflare CDN /24 prefixes
-	defaultWARPOutputFile = "all_warp_v4.txt" // Cloudflare WARP /24 prefixes
+	defaultInputFile      = "all_cf_v4.txt"   // every Cloudflare /24
+	defaultCDNOutputFile  = "all_cdn_v4.txt"  // /24s that answer as CDN
+	defaultWARPOutputFile = "all_warp_v4.txt" // /24s that answer as WARP
 
-	// WARP WireGuard configuration (public, default WARP keys — not secrets).
+	// WARP WireGuard keys. These are Cloudflare's public defaults, not secrets.
 	privateKeyB64   = "0ALZyBx68KO4by/oQR+3kmPpYbrOuq605aBYv5GKU0Y="
 	publicKeyB64    = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
 	presharedKeyB64 = ""
@@ -63,7 +64,7 @@ const (
 var (
 	httpClient = &http.Client{
 		Timeout: RequestTimeout,
-		// The CDN probe only cares about the first-hop response, never a redirect target.
+		// Don't follow redirects. We only trust the direct response from the probed IP.
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -93,7 +94,7 @@ func showHelp() {
 }
 
 // fetchAndFilterPrefixes downloads the BGP table and returns the IPv4 prefixes
-// belonging to any of the given ASNs.
+// that belong to one of the given ASNs.
 func fetchAndFilterPrefixes(url string, asns []int) ([]netip.Prefix, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -112,6 +113,7 @@ func fetchAndFilterPrefixes(url string, asns []int) ([]netip.Prefix, error) {
 		return nil, fmt.Errorf("received non-200 status code %d", resp.StatusCode)
 	}
 
+	// Build a set once so each line is a map lookup rather than a slice scan.
 	wanted := make(map[int]struct{}, len(asns))
 	for _, asn := range asns {
 		wanted[asn] = struct{}{}
@@ -136,7 +138,8 @@ func fetchAndFilterPrefixes(url string, asns []int) ([]netip.Prefix, error) {
 }
 
 // convertTo24AndWrite expands prefixes into unique, sorted /24 blocks, writes
-// them to outputFile, and returns them for reuse.
+// them to outputFile, and returns them so callers can reuse them without
+// re-reading the file.
 func convertTo24AndWrite(prefixes []netip.Prefix, outputFile string) ([]netip.Prefix, error) {
 	prefixChan := make(chan netip.Prefix, ConcurrentPrefixes)
 	var wg sync.WaitGroup
@@ -182,8 +185,8 @@ func convertTo24AndWrite(prefixes []netip.Prefix, outputFile string) ([]netip.Pr
 	return unique, nil
 }
 
-// processPrefix sends every /24 block covered by prefix to out. A prefix that is
-// already /24 or longer collapses to its single covering /24.
+// processPrefix sends every /24 block inside prefix to out. A prefix that is
+// already /24 or smaller maps to the single /24 that covers it.
 func processPrefix(prefix netip.Prefix, out chan<- netip.Prefix) {
 	bits := prefix.Bits()
 	if bits >= 24 {
@@ -197,7 +200,7 @@ func processPrefix(prefix netip.Prefix, out chan<- netip.Prefix) {
 	}
 }
 
-// incrementIP returns ip advanced by increment (IPv4 arithmetic).
+// incrementIP returns ip plus increment, using plain IPv4 (uint32) math.
 func incrementIP(ip netip.Addr, increment int) netip.Addr {
 	b := ip.As4()
 	n := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
@@ -205,7 +208,8 @@ func incrementIP(ip netip.Addr, increment int) netip.Addr {
 	return netip.AddrFrom4([4]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)})
 }
 
-// isValidCDNIP reports whether ip serves a Cloudflare /cdn-cgi/trace response.
+// isValidCDNIP reports whether ip serves a Cloudflare /cdn-cgi/trace response,
+// retrying a few times before giving up.
 func isValidCDNIP(ip netip.Addr) bool {
 	url := fmt.Sprintf("http://%s/cdn-cgi/trace", ip)
 	for i := 0; i < RetryCount; i++ {
@@ -219,8 +223,9 @@ func isValidCDNIP(ip netip.Addr) bool {
 	return false
 }
 
-// servesCloudflareTrace reports whether url returns a genuine Cloudflare trace
-// body (guarding against unrelated servers that merely answer 200).
+// servesCloudflareTrace reports whether url returns a real Cloudflare trace body.
+// Checking the body, not just the 200, keeps unrelated web servers on the same
+// IP from being counted as Cloudflare.
 func servesCloudflareTrace(url string) bool {
 	resp, err := httpClient.Get(url)
 	if err != nil {
@@ -238,8 +243,8 @@ func servesCloudflareTrace(url string) bool {
 	return bytes.Contains(body, []byte("colo="))
 }
 
-// prefixHasValidIP reports whether any probed IP in the /24 passes check. Probes
-// run concurrently and it returns as soon as one succeeds.
+// prefixHasValidIP reports whether any sampled IP in the /24 passes check. The
+// probes run concurrently and it returns as soon as one succeeds.
 func prefixHasValidIP(prefix netip.Prefix, check func(netip.Addr) bool) bool {
 	base := prefix.Addr()
 	found := make(chan struct{}, len(testIPOffsets))
@@ -258,6 +263,8 @@ func prefixHasValidIP(prefix netip.Prefix, check func(netip.Addr) bool) bool {
 		close(found)
 	}()
 
+	// Receives once if any probe reported success, or reads the closed channel
+	// (ok == false) once they all finish without one.
 	_, ok := <-found
 	return ok
 }
@@ -349,7 +356,7 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 	}
 
 	now := time.Now().UTC()
-	epochOffset := int64(4611686018427387914) // TAI offset from Unix epoch
+	epochOffset := int64(4611686018427387914) // TAI64 epoch offset (2^62 + 10 leap seconds)
 
 	tai64nTimestampBuf := make([]byte, 0, 16)
 	tai64nTimestampBuf = binary.BigEndian.AppendUint64(tai64nTimestampBuf, uint64(epochOffset+now.Unix()))
@@ -359,7 +366,7 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 		return 0, err
 	}
 
-	// Writes to a bytes.Buffer never fail, so their errors are safely ignored.
+	// Writes to a bytes.Buffer never fail, so their errors are safe to ignore.
 	initiationPacket := new(bytes.Buffer)
 	binary.Write(initiationPacket, binary.BigEndian, []byte{0x01, 0x00, 0x00, 0x00})
 	binary.Write(initiationPacket, binary.BigEndian, uint32ToBytes(28))
@@ -441,8 +448,8 @@ func isValidWarpIP(ip netip.Addr) bool {
 	return false
 }
 
-// runChecker probes every prefix with check and writes the passing /24 prefixes
-// (sorted) to outputFile. label is used only in progress output.
+// runChecker probes every prefix with check and writes the passing /24 prefixes,
+// sorted, to outputFile. label only appears in the progress output.
 func runChecker(prefixes []netip.Prefix, check func(netip.Addr) bool, outputFile, label string) error {
 	results := make(chan PrefixResult)
 	sem := make(chan struct{}, ConcurrentPrefixes)
@@ -514,6 +521,7 @@ func run() error {
 		return nil
 	}
 
+	// A single -o can't name two outputs, so refuse to run both checkers with it.
 	if *output != "" && *cdn && *warp {
 		return errors.New("-o cannot be used when running both -c and -w; they would overwrite each other")
 	}
