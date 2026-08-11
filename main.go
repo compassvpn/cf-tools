@@ -45,6 +45,10 @@ const (
 	bgpTableURL = "https://bgp.tools/table.jsonl" // table dump, one JSON record per line
 	userAgent   = "compassvpn-cf-tools bgp.tools" // User-Agent sent to bgp.tools
 
+	// Host header for CDN probes, set while the URL still points at the IP under
+	// test. A bare-IP request gets 403 error 1003 instead of the trace.
+	traceHost = "cp.cloudflare.com"
+
 	ConcurrentPrefixes = 55              // how many prefixes to scan at once
 	RetryCount         = 4               // attempts per probe before giving up
 	RetryDelay         = 1 * time.Second // wait between attempts
@@ -227,7 +231,13 @@ func isValidCDNIP(ip netip.Addr) bool {
 // not just the 200 status, keeps an unrelated web server on the same IP from
 // being counted as Cloudflare.
 func servesCloudflareTrace(url string) bool {
-	resp, err := httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	req.Host = traceHost
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return false
 	}
