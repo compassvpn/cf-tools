@@ -1,0 +1,54 @@
+name: CI
+
+# Compiles pull requests. Without this the only thing that ever builds the
+# module is the nightly release job, which is far too late to learn a
+# dependency bump broke the tree.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+
+    steps:
+    - name: Checkout repository
+      # On pull_request this checks out the PR already merged into the base,
+      # so a green build here means the post-merge tree compiles.
+      uses: actions/checkout@v7
+
+    - name: Setup Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: 'stable'
+
+    - name: Verify module checksums
+      run: go mod verify
+
+    - name: Build
+      run: go build ./...
+
+    - name: Vet
+      run: go vet ./...
+
+  # Merges Dependabot PRs that build. Gated by needs:, not by `gh pr merge
+  # --auto`: auto-merge only waits for checks when a branch protection rule
+  # requires them, and main is unprotected, so --auto would merge on contact.
+  dependabot-automerge:
+    needs: build
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Squash merge
+      run: gh pr merge --squash "$PR_URL"
+      env:
+        PR_URL: ${{ github.event.pull_request.html_url }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
