@@ -45,6 +45,13 @@ const (
 	bgpTableURL = "https://bgp.tools/table.jsonl" // table dump, one JSON record per line
 	userAgent   = "compassvpn-cf-tools bgp.tools" // User-Agent sent to bgp.tools
 
+	// Host header sent with every CDN probe. The edge answers a bare-IP request
+	// with 403 error 1003 (direct IP access not allowed) instead of the trace, so
+	// the probe has to name a Cloudflare-fronted host. cp.cloudflare.com is
+	// Cloudflare's own connectivity-check endpoint, so it exists to be reached by
+	// machines and is served over plain HTTP without a redirect.
+	traceHost = "cp.cloudflare.com"
+
 	ConcurrentPrefixes = 55              // how many prefixes to scan at once
 	RetryCount         = 4               // attempts per probe before giving up
 	RetryDelay         = 1 * time.Second // wait between attempts
@@ -223,11 +230,19 @@ func isValidCDNIP(ip netip.Addr) bool {
 	return false
 }
 
-// Reports whether url returns a real Cloudflare trace body. Checking the body,
-// not just the 200 status, keeps an unrelated web server on the same IP from
-// being counted as Cloudflare.
+// Reports whether url returns a real Cloudflare trace body. The request names
+// traceHost so the edge serves the trace instead of refusing a bare-IP request.
+// Checking the body, not just the 200 status, keeps an unrelated web server on
+// the same IP from being counted as Cloudflare.
 func servesCloudflareTrace(url string) bool {
-	resp, err := httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	// The connection still goes to the IP in url; only the Host header changes.
+	req.Host = traceHost
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return false
 	}
