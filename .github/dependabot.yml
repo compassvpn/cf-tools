@@ -1,9 +1,7 @@
-# Keeps dependencies up to date via automated pull requests.
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 version: 2
 
 updates:
-  # Go modules (go.mod and go.sum).
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
@@ -18,7 +16,6 @@ updates:
         patterns:
           - "*"
 
-  # GitHub Actions referenced in .github/workflows.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -27,7 +24,6 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
-    # Bundle all Action updates into a single PR.
     groups:
       github-actions:
         patterns:

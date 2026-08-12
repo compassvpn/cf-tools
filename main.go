@@ -42,22 +42,22 @@ var asnsToFilter = []int{
 var testIPOffsets = []int{8, 13, 69, 144, 234}
 
 const (
-	bgpTableURL = "https://bgp.tools/table.jsonl" // table dump, one JSON record per line
-	userAgent   = "compassvpn-cf-tools bgp.tools" // User-Agent sent to bgp.tools
+	bgpTableURL = "https://bgp.tools/table.jsonl" // Table dump, one JSON record per line.
+	userAgent   = "compassvpn-cf-tools bgp.tools"
 
 	// Host header for CDN probes, set while the URL still points at the IP under
 	// test. A bare-IP request gets 403 error 1003 instead of the trace.
 	traceHost = "cp.cloudflare.com"
 
-	ConcurrentPrefixes = 55              // how many prefixes to scan at once
-	RetryCount         = 4               // attempts per probe before giving up
-	RetryDelay         = 1 * time.Second // wait between attempts
-	RequestTimeout     = 4 * time.Second // timeout for one CDN HTTP probe
-	FetchTimeout       = 2 * time.Minute // timeout for downloading the whole table
+	ConcurrentPrefixes = 55
+	RetryCount         = 4 // Attempts per probe before giving up.
+	RetryDelay         = 1 * time.Second
+	RequestTimeout     = 4 * time.Second // Timeout for one CDN HTTP probe.
+	FetchTimeout       = 2 * time.Minute // Timeout for downloading the whole table.
 
-	defaultInputFile      = "all_cf_v4.txt"   // every Cloudflare /24
-	defaultCDNOutputFile  = "all_cdn_v4.txt"  // /24s that answer as CDN
-	defaultWARPOutputFile = "all_warp_v4.txt" // /24s that answer as WARP
+	defaultInputFile      = "all_cf_v4.txt"   // Every Cloudflare /24.
+	defaultCDNOutputFile  = "all_cdn_v4.txt"  // /24s that answer as CDN.
+	defaultWARPOutputFile = "all_warp_v4.txt" // /24s that answer as WARP.
 
 	// WARP WireGuard keys. These are Cloudflare's public defaults, not secrets.
 	privateKeyB64   = "0ALZyBx68KO4by/oQR+3kmPpYbrOuq605aBYv5GKU0Y="
@@ -73,7 +73,7 @@ var (
 			return http.ErrUseLastResponse
 		},
 	}
-	scanPorts = []int{2408} // WARP ports to scan, e.g. {2408, 7559, 2371, 894, ...}
+	scanPorts = []int{2408} // WARP ports to scan, e.g. {2408, 7559, 2371, 894, ...}.
 )
 
 // Represents one record from the bgp.tools table dump.
@@ -117,7 +117,6 @@ func fetchAndFilterPrefixes(url string, asns []int) ([]netip.Prefix, error) {
 		return nil, fmt.Errorf("received non-200 status code %d", resp.StatusCode)
 	}
 
-	// Build a set once so each line is a map lookup rather than a slice scan.
 	wanted := make(map[int]struct{}, len(asns))
 	for _, asn := range asns {
 		wanted[asn] = struct{}{}
@@ -296,7 +295,6 @@ func staticKeypair(privateKeyBase64 string) (noise.DHKey, error) {
 	}, nil
 }
 
-// Generates a random ephemeral keypair.
 func ephemeralKeypair() (noise.DHKey, error) {
 	ephemeralPrivateKey := make([]byte, 32)
 	if _, err := rand.Read(ephemeralPrivateKey); err != nil {
@@ -314,7 +312,6 @@ func ephemeralKeypair() (noise.DHKey, error) {
 	}, nil
 }
 
-// Encodes n as little-endian bytes.
 func uint32ToBytes(n uint32) []byte {
 	b := make([]byte, 4)
 	binary.LittleEndian.PutUint32(b, n)
@@ -366,7 +363,7 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 	}
 
 	now := time.Now().UTC()
-	epochOffset := int64(4611686018427387914) // TAI64 epoch offset (2^62 + 10 leap seconds)
+	epochOffset := int64(4611686018427387914) // TAI64N epoch offset (2^62 + 10 leap seconds).
 
 	tai64nTimestampBuf := make([]byte, 0, 16)
 	tai64nTimestampBuf = binary.BigEndian.AppendUint64(tai64nTimestampBuf, uint64(epochOffset+now.Unix()))
@@ -376,7 +373,6 @@ func initiateHandshake(serverAddr netip.AddrPort, privateKeyBase64, peerPublicKe
 		return 0, err
 	}
 
-	// Writes to a bytes.Buffer never fail, so their errors are safe to ignore.
 	initiationPacket := new(bytes.Buffer)
 	binary.Write(initiationPacket, binary.BigEndian, []byte{0x01, 0x00, 0x00, 0x00})
 	binary.Write(initiationPacket, binary.BigEndian, uint32ToBytes(28))
