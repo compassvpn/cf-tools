@@ -43,7 +43,7 @@ var testIPOffsets = []int{8, 13, 69, 144, 234}
 
 const (
 	bgpTableURL = "https://bgp.tools/table.jsonl" // Table dump, one JSON record per line.
-	userAgent   = "compassvpn-cf-tools bgp.tools"
+	userAgent   = "compassvpn-cf-tools bgp.tools - contact@compassvpn.org"
 
 	// Host header for CDN probes, set while the URL still points at the IP under
 	// test. A bare-IP request gets 403 error 1003 instead of the trace.
